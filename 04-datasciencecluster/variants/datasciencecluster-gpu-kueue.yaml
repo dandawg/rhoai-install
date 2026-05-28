@@ -1,0 +1,57 @@
+# GPU + Distributed Workloads DataScienceCluster
+#
+# Enables all core components plus distributed workload support (Kueue + Ray + Trainer)
+# and GPU-accelerated model serving.
+#
+# Prerequisites:
+#   - cert-manager (Phase 1)
+#   - NFD operator installed and NodeFeatureDiscovery CR created (02-optional-dependencies/nfd/)
+#   - NVIDIA GPU Operator installed and ClusterPolicy created (02-optional-dependencies/nvidia-gpu/)
+#   - Red Hat Kueue Operator installed and Kueue CR created (02-optional-dependencies/kueue/)
+#   - Job Set Operator installed and JobSetOperator CR created (01-required-dependencies/job-set/)
+#   - S3-compatible object storage for aipipelines
+#
+# After applying, configure ClusterQueue and LocalQueue resources:
+#   oc apply -f 05-configuration/distributed-workloads/
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    dashboard:
+      managementState: Managed
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+    aipipelines:
+      managementState: Managed
+    kserve:
+      managementState: Managed
+      rawDeploymentServiceConfig: Headless
+    kueue:
+      managementState: Unmanaged        # External Kueue operator owns the instance
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+    ray:
+      managementState: Managed
+    trainer:
+      managementState: Managed
+    trainingoperator:
+      managementState: Managed
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+    trustyai:
+      managementState: Managed
+      mcpGuardrailsMode: false
+    llamastackoperator:
+      managementState: Removed          # Set to Managed if using Llama Stack (requires Service Mesh)
+    mlflowoperator:
+      managementState: Managed
+    feastoperator:
+      managementState: Managed
+    sparkoperator:
+      managementState: Removed

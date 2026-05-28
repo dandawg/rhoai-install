@@ -1,0 +1,14 @@
+# GatewayClass for llm-d Distributed Inference
+#
+# Apply once per cluster.
+# Prerequisites: Red Hat Connectivity Link (RHCL) operator installed,
+#                kserve: Managed in the DataScienceCluster,
+#                OCP 4.20+ for llm-d support.
+#
+# Note: OpenShift Service Mesh v2 must NOT be installed — only v3 or none.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-ai-inference
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller

@@ -1,0 +1,28 @@
+# ArgoCD Application — RHOAI Operator
+#
+# Wave 1: runs after required dependency operators (wave 0).
+# The RHOAI CSV will reach Succeeded once all required deps are healthy.
+#
+# Update repoURL to your fork before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rhoai-operator
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+    targetRevision: main
+    path: 03-rhoai-operator
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

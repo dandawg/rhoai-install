@@ -1,0 +1,45 @@
+# ArgoCD Application — DataScienceCluster
+#
+# Wave 2: runs after the RHOAI operator CSV reaches Succeeded.
+# SkipDryRunOnMissingResource=true is required because the DataScienceCluster CRD
+# is not present until the RHOAI operator installs it.
+#
+# This Application syncs the DEFAULT DataScienceCluster configuration.
+# To use a variant instead, change the path to:
+#   04-datasciencecluster/variants/datasciencecluster-minimal.yaml   (single file)
+#   04-datasciencecluster/variants/datasciencecluster-gpu-kueue.yaml (single file)
+#
+# ignoreDifferences on /spec allows cluster-side edits to DSC components
+# (e.g., via RHOAI dashboard) to persist without being reverted by Argo CD.
+# Remove this block if you want strict GitOps (all changes must go through Git).
+#
+# Update repoURL to your fork before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rhoai-datasciencecluster
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+    targetRevision: main
+    path: 04-datasciencecluster
+  destination:
+    server: https://kubernetes.default.svc
+  ignoreDifferences:
+    - group: datasciencecluster.opendatahub.io
+      kind: DataScienceCluster
+      name: default-dsc
+      jsonPointers:
+        - /spec
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true

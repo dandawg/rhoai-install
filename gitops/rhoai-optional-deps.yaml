@@ -1,0 +1,58 @@
+# ArgoCD Application — RHOAI Optional Dependency Operators
+#
+# Wave 0: runs concurrently with required deps.
+#
+# IMPORTANT: Edit the sources list — include only the operators relevant to your environment.
+# Remove sources for operators you are not installing.
+#
+# Default: includes NFD, NVIDIA GPU, Kueue, LWS, Service Mesh, RHCL.
+# Remove any section you don't need.
+#
+# Ordering note: NFD must be healthy before GPU operator creates its ClusterPolicy.
+# If ArgoCD applies them simultaneously and GPU fails initially, it will retry on the
+# next sync cycle (selfHeal: true). Alternatively, create separate Applications for
+# NFD (wave 0) and GPU (wave 1) to enforce strict ordering.
+#
+# Update repoURL to your fork before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rhoai-optional-deps
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  sources:
+    # GPU nodes — remove nfd and nvidia-gpu if no GPU nodes
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/nfd
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/nvidia-gpu
+    # Distributed workloads — remove if not using Ray/TrainingOperator
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/kueue
+    # llm-d Distributed Inference — remove if not using llm-d
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/lws
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/rhcl
+    # Llama Stack — remove if not using Llama Stack/RAG
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 02-optional-dependencies/service-mesh
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true

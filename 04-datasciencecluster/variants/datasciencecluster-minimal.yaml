@@ -1,0 +1,51 @@
+# Minimal DataScienceCluster — core components only
+#
+# Enables: dashboard, workbenches, kserve, aipipelines
+# All other components are set to Removed and can be enabled later.
+#
+# Use this when:
+# - Standing up a new environment quickly
+# - Not yet ready to configure optional components
+# - Troubleshooting a base install
+#
+# Prerequisites: cert-manager (Phase 1), default StorageClass, S3 storage for aipipelines
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    dashboard:
+      managementState: Managed
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+    aipipelines:
+      managementState: Managed
+    kserve:
+      managementState: Managed
+      rawDeploymentServiceConfig: Headless
+    kueue:
+      managementState: Removed
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+    ray:
+      managementState: Removed
+    trainer:
+      managementState: Removed
+    trainingoperator:
+      managementState: Removed
+    modelregistry:
+      managementState: Removed
+    trustyai:
+      managementState: Removed
+    llamastackoperator:
+      managementState: Removed
+    mlflowoperator:
+      managementState: Removed
+    feastoperator:
+      managementState: Removed
+    sparkoperator:
+      managementState: Removed

@@ -1,0 +1,21 @@
+# LocalQueue — namespace-level entry point for distributed workload submissions
+#
+# Create one LocalQueue per project/namespace where data scientists will run workloads.
+# Change the namespace to match your data science project namespace.
+#
+# To create in multiple namespaces, apply this file once per namespace:
+#   oc apply -f 05-configuration/distributed-workloads/localqueue.yaml -n <project-namespace>
+#
+# Or use oc to set the namespace directly:
+#   oc apply -f - <<EOF
+#   (paste contents with namespace set)
+#   EOF
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  name: default
+  namespace: rhods-notebooks            # Change to your data science project namespace
+  annotations:
+    kueue.x-k8s.io/default-queue: "true"
+spec:
+  clusterQueueName: default

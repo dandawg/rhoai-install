@@ -1,0 +1,25 @@
+# ClusterQueue — cluster-level resource quota for distributed workloads
+#
+# This is a cluster-scoped resource (no namespace).
+# Adjust cpu, memory, and nvidia.com/gpu quotas to match your cluster capacity.
+# Data scientists submit workloads to a LocalQueue (see localqueue.yaml) which
+# routes to this ClusterQueue.
+#
+# Prerequisites: Kueue operator installed, Kueue CR created, kueue: Unmanaged in DSC
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: default
+spec:
+  namespaceSelector: {}               # Allow all namespaces to use this queue
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "nvidia.com/gpu"]
+      flavors:
+        - name: default
+          resources:
+            - name: cpu
+              nominalQuota: "16"      # Adjust to your cluster's available CPU
+            - name: memory
+              nominalQuota: 64Gi      # Adjust to your cluster's available memory
+            - name: nvidia.com/gpu
+              nominalQuota: "4"       # Set to 0 if no GPUs; remove entry if no GPU nodes

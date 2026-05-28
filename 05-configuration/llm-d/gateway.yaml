@@ -1,0 +1,20 @@
+# Shared Gateway for llm-d Distributed Inference
+#
+# Apply after the GatewayClass is created and the RHOAI operator has provisioned
+# the 'data-science-gateway-service-tls' Secret in openshift-ingress.
+#
+# The Gateway is deployed in openshift-ingress and allows routes from all namespaces.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: openshift-ai-inference
+  namespace: openshift-ingress
+spec:
+  gatewayClassName: openshift-ai-inference
+  listeners:
+    - name: https
+      port: 443
+      protocol: HTTPS
+      allowedRoutes:
+        namespaces:
+          from: All

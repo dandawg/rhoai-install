@@ -1,0 +1,29 @@
+# RHOAI User Access Groups
+#
+# By default, all OpenShift users can access RHOAI.
+# Apply this file to create dedicated groups for restricting access.
+#
+# NOTE: rhods-admins is created automatically by the RHOAI operator during installation
+# (managed by manager: manager with platform.opendatahub.io/ labels). Do NOT apply a
+# rhods-admins Group manifest here — the operator owns that resource and will reconcile
+# over any changes to it. Manage its membership via oc adm only (see below).
+#
+# After creating the groups, configure them in the RHOAI dashboard:
+#   RHOAI Dashboard → Settings → User management
+#   Set "Data scientists" group = rhods-users
+#   Set "Administrators" group = rhods-admins
+#
+# Or set them via the OdhDashboardConfig:
+#   oc patch odhdashboardconfig odh-dashboard-config -n redhat-ods-applications \
+#     --type=merge \
+#     -p '{"spec":{"groupsConfig":{"allowedGroups":"rhods-users","adminGroups":"rhods-admins"}}}'
+#
+# Add users after applying:
+#   oc adm groups add-users rhods-users <username>
+#   oc adm groups add-users rhods-admins <admin-username>
+---
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: rhods-users
+users: []

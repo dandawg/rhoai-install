@@ -1,0 +1,76 @@
+# Default DataScienceCluster for RHOAI 3.4
+#
+# This configuration enables the core components used by most customer environments.
+# Review each component's managementState and prerequisites before applying.
+#
+# managementState values:
+#   Managed  — RHOAI installs and manages this component
+#   Removed  — Component is not installed (can be enabled later by changing to Managed)
+#   Unmanaged — Component CRD is present but managed by an external operator (e.g., Kueue)
+#
+# See 04-datasciencecluster/README.md for component prerequisites and configuration guidance.
+# See 04-datasciencecluster/variants/ for minimal and GPU+Kueue configurations.
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+  labels:
+    app.kubernetes.io/name: datasciencecluster
+spec:
+  components:
+    # --- Always enable ---
+    dashboard:
+      managementState: Managed
+
+    # --- Core components ---
+    workbenches:
+      managementState: Managed
+      workbenchNamespace: rhods-notebooks
+
+    aipipelines:
+      managementState: Managed          # Requires S3-compatible object storage
+
+    kserve:
+      managementState: Managed          # Requires cert-manager (Phase 1)
+      rawDeploymentServiceConfig: Headless
+
+    # --- Distributed workloads ---
+    # If using the Red Hat Kueue Operator (02-optional-dependencies/kueue/):
+    #   set managementState: Unmanaged (external operator owns the instance)
+    # If not installing Kueue: leave as Removed
+    kueue:
+      managementState: Removed          # Change to Unmanaged if Kueue operator is installed
+      defaultClusterQueueName: default
+      defaultLocalQueueName: default
+
+    ray:
+      managementState: Managed          # Requires Kueue operator + cert-manager
+
+    trainer:
+      managementState: Managed          # Kubeflow Trainer v2 (requires Job Set operator)
+
+    trainingoperator:
+      managementState: Removed          # Legacy Kubeflow Training Operator; enable if needed
+
+    # --- Model management ---
+    modelregistry:
+      managementState: Managed
+      registriesNamespace: rhoai-model-registries
+
+    # --- AI observability / safety ---
+    trustyai:
+      managementState: Managed
+      mcpGuardrailsMode: false
+
+    # --- Optional components (set to Managed to enable) ---
+    llamastackoperator:
+      managementState: Managed          # Requires Service Mesh 3.x + cert-manager + GPU + NFD
+
+    mlflowoperator:
+      managementState: Managed          # Requires PVC (dev) or external DB + S3 (prod)
+
+    feastoperator:
+      managementState: Managed          # Feature Store for ML feature management
+
+    sparkoperator:
+      managementState: Removed          # Apache Spark 4.x; set to Managed if needed

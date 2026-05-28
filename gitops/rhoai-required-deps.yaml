@@ -1,0 +1,49 @@
+# ArgoCD Application — RHOAI Required Dependency Operators
+#
+# Syncs all 6 required dependency operators from the 01-required-dependencies/ directory.
+# Wave 0: runs before the RHOAI operator Application.
+#
+# NOTE: Job Set operator requires a post-sync CR (jobsetoperator-cr.yaml).
+# ArgoCD will apply all files in the directory; the JobSetOperator CR will fail
+# until the CSV reaches Succeeded. Add a Sync Wave hook or apply it manually
+# after the CSV is healthy if you encounter ordering issues.
+#
+# Update repoURL to your fork before applying.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rhoai-required-deps
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/cert-manager
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/job-set
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/custom-metrics-autoscaler
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/opentelemetry
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/tempo
+    - repoURL: https://github.com/YOUR-ORG/rhoai-install.git
+      targetRevision: main
+      path: 01-required-dependencies/cluster-observability
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - SkipDryRunOnMissingResource=true
