@@ -1,0 +1,146 @@
+---
+# LlamaStackDistribution CR — deploys a Llama Stack server managed by the
+# Llama Stack Operator. Required for the gen-ai-studio AI Playground.
+#
+# Prerequisites:
+#   - llamastackoperator: Managed in the DataScienceCluster
+#   - OpenShift Service Mesh 3.x operator installed
+#   - At least one running InferenceService (vLLM) in the target project
+#   - PostgreSQL instance reachable from the cluster (in-cluster or external)
+#     PostgreSQL is required for all metadata and vector store backends.
+#     See 'PostgreSQL options' note below.
+#
+# IMPORTANT: Replace ALL placeholder values (<...>) before applying.
+#
+# apiVersion: llamastack.io/v1alpha1  (not llamastack.io/v1)
+#
+# Ref: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_llama_stack/deploying-llama-stack-server_rag
+#
+# ── PostgreSQL options ───────────────────────────────────────────────────────
+# A. In-cluster PostgreSQL: deploy a simple PostgreSQL StatefulSet in the
+#    same namespace, or use the OpenShift AI Pipelines DB if available.
+# B. External PostgreSQL: any reachable PostgreSQL 14+ instance.
+# C. Minimal / Milvus Lite (dev only): set ENABLE_INLINE_MILVUS=true and
+#    still provide PostgreSQL — Milvus Lite still uses Postgres for metadata.
+# There is no production-ready SQLite option; it was deprecated in RHOAI 3.4.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: llamastack
+  namespace: <your-data-science-project>    # e.g. demo
+  labels:
+    # REQUIRED for the RHOAI Dashboard (gen-ai-ui) to discover this LSD.
+    # Without this label the gen-ai-ui informer ignores the resource and the
+    # AI Playground returns "Error loading components / no LSD found".
+    opendatahub.io/dashboard: "true"
+spec:
+  replicas: 1
+  server:
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      env:
+        # ── Inference model connection ─────────────────────────────────────
+        # Use the INTERNAL cluster service URL (not the external route).
+        # For a KServe InferenceService named 'my-model' in namespace 'demo':
+        #   https://my-model-predictor.demo.svc.cluster.local:8443/v1
+        - name: VLLM_URL
+          value: "https://<inferenceservice-name>-predictor.<namespace>.svc.cluster.local:8443/v1"
+        - name: INFERENCE_MODEL
+          value: "<model-name>"             # e.g. Qwen/Qwen2.5-0.5B-Instruct
+        - name: VLLM_TLS_VERIFY
+          value: "false"                    # internal cluster TLS is self-signed
+
+        # ── PostgreSQL metadata store ──────────────────────────────────────
+        - name: POSTGRES_HOST
+          value: "<postgres-host>"          # e.g. postgresql.demo.svc.cluster.local
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "llamastack"               # created automatically if user has CREATE privilege
+        - name: POSTGRES_USER
+          value: "llamastack"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llamastack-postgres-secret  # create this Secret before applying
+              key: password
+
+        # ── Embedding model ────────────────────────────────────────────────
+        # REQUIRED for the AI Playground vector store (gen-ai-ui creates a
+        # default vector store using this model ID on first load).
+        #
+        # Option A — Inline (recommended for playground/dev):
+        # The rh-dev image ships ibm-granite/granite-embedding-125m-english
+        # in its HuggingFace cache. Enable the sentence-transformers provider
+        # to register it as the expected model ID automatically.
+        - name: ENABLE_SENTENCE_TRANSFORMERS
+          value: "true"
+        #
+        # Option B — Remote vLLM embedding ISVC (recommended for production RAG):
+        # Deploy a separate embedding InferenceService and point the LSD at it.
+        # See the official Chapter 4 example in the Working with Llama Stack guide.
+        # - name: VLLM_EMBEDDING_URL
+        #   value: "https://<embedding-isvc>-predictor.<namespace>.svc.cluster.local:8443/v1"
+        # - name: EMBEDDING_MODEL
+        #   value: "sentence-transformers/ibm-granite/granite-embedding-125m-english"
+        # - name: EMBEDDING_PROVIDER_MODEL_ID
+        #   value: "<model-name-reported-by-vllm>"
+        # - name: VLLM_EMBEDDING_TLS_VERIFY
+        #   value: "false"
+        # - name: VLLM_EMBEDDING_API_TOKEN    # only needed if enable-auth=true on ISVC
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: <sa-token-secret>
+        #       key: token
+
+        # ── Vector store backend ───────────────────────────────────────────
+        # REQUIRED: all vector_io backends are disabled by default.
+        # Enable at least one. FAISS is the simplest for dev/test.
+        #
+        # Option A — Inline FAISS (dev/test, persists index in Postgres):
+        - name: ENABLE_FAISS
+          value: "true"
+        #
+        # Option B — pgvector (production RAG, requires pgvector extension):
+        # - name: ENABLE_PGVECTOR
+        #   value: "true"
+        # - name: PGVECTOR_HOST
+        #   value: "<postgres-host>"
+        # - name: PGVECTOR_PORT
+        #   value: "5432"
+        # - name: PGVECTOR_DB
+        #   value: "llamastack"
+        # - name: PGVECTOR_USER
+        #   value: "llamastack"
+        # - name: PGVECTOR_PASSWORD
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: llamastack-postgres-secret
+        #       key: password
+        #
+        # Option C — Inline Milvus Lite (dev/small-scale, not for multi-worker):
+        # - name: ENABLE_INLINE_MILVUS
+        #   value: "true"
+
+    distribution:
+      name: rh-dev    # internal RHOAI image reference — do not change
+    storage:
+      size: 20Gi
+      # mountPath defaults to /opt/app-root/src/.llama/distributions/rh/
+
+---
+# Secret for PostgreSQL password — create before applying the Distribution.
+# Avoid putting the password directly on the command line (shell history).
+#
+# Option A: create from a file
+#   echo -n 'your-pg-password' > /tmp/pg-password.txt
+#   oc create secret generic llamastack-postgres-secret \
+#     --from-file=password=/tmp/pg-password.txt \
+#     -n <your-data-science-project>
+#
+# Option B: create interactively via the web console
+#   Workloads → Secrets → Create → Key/Value secret
+#   Key: password   Value: <your-pg-password>

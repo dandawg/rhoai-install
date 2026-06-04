@@ -124,7 +124,7 @@ Plan these before enabling the matching DataScienceCluster components — they a
 | `modelregistry` | MySQL 5.x+ (8.x recommended) and S3 |
 | `mlflowoperator` (production) | External DB and S3 |
 | GPU / llm-d workloads | GPU nodes and optional dependency operators (NFD, GPU operator, LWS, etc.) |
-| `llamastackoperator` | Service Mesh 3.x, cert-manager, GPU, and NFD |
+| `llamastackoperator` | Service Mesh 3.x, cert-manager, GPU, NFD. **PostgreSQL required** for manually-created `LlamaStackDistribution` CRs (RAG/agentic use cases). The AI Playground auto-creates its own distribution (`lsd-genai-playground`). |
 
 Model serving (`kserve`) does not require object storage — models can use PVC, OCI, S3, or inline sources.
 
@@ -294,7 +294,7 @@ Install only those relevant to your environment. Each entry is a complete Instal
 | OpenShift Service Mesh 3.x | `servicemeshoperator3` | `openshift-operators` | No (RHOAI creates CR) | Llama Stack / RAG |
 | Leader Worker Set | `leader-worker-set` | `openshift-lws-operator` | **Yes** — `LeaderWorkerSetOperator` | llm-d Distributed Inference |
 | SR-IOV Network Operator | `sriov-network-operator` | `openshift-sriov-network-operator` | No (auto-created) | SR-IOV / RDMA multi-node GPU |
-| Red Hat Connectivity Link | `rhcl-operator` | `openshift-operators` | No (Gateway in Post-Install) | llm-d Distributed Inference |
+| Red Hat Connectivity Link | `rhcl-operator` | `openshift-operators` | **Yes** — `Kuadrant` (`kuadrant-system`) in Post-Install | llm-d Distributed Inference |
 
 ---
 
@@ -557,18 +557,20 @@ oc get pods -n openshift-sriov-network-operator
 
 #### Red Hat Connectivity Link Operator
 
-**When needed:** Distributed Inference with llm-d. After installing, configure a `GatewayClass` and `Gateway` resource (see Post-Install section).
+**When needed:** Distributed Inference with llm-d. After installing, a `Kuadrant` CR must be created in `kuadrant-system` to activate the control plane — this is what provisions the Envoy Gateway controller that serves the llm-d GatewayClass. Configure the `GatewayClass` and `Gateway` **after** the Kuadrant CR is Ready (see Post-Install section).
+
+> **Order matters:** Apply the Kuadrant CR first, wait for it to be Ready, then apply the GatewayClass and Gateway. Applying the GatewayClass before Kuadrant is running causes the controller to miss the resource and stay `Unknown`.
 
 | | |
 |---|---|
 | OperatorHub package | `rhcl-operator` |
 | Installed namespace | `openshift-operators` (cluster-scoped) |
-| CR instance required? | No — configure `GatewayClass`/`Gateway` in Post-Install |
+| CR instance required? | **Yes** — `Kuadrant` in `kuadrant-system` (Post-Install, before GatewayClass) |
 
 **Install:** Operators → OperatorHub → search `Red Hat Connectivity Link` → Install (All namespaces)
 
 ```bash
-# Verify
+# Verify operator
 oc get subscription -A | grep rhcl
 ```
 
@@ -739,7 +741,7 @@ Set each component's `managementState` to `Managed` (install) or `Removed` (do n
 | `trainingoperator` | If using distributed training | Kubeflow Training Operator for distributed training jobs | Kueue Operator + cert-manager |
 | `modelregistry` | Optional | Centralized model metadata registry | MySQL 5.x+ (8.x recommended) + S3 |
 | `trustyai` | Optional | AI model monitoring, explainability, and bias detection | None |
-| `llamastackoperator` | Optional — RAG/GenAI | Llama Stack for RAG and GenAI applications | Service Mesh 3.x + cert-manager + GPU + NFD |
+| `llamastackoperator` | Optional — RAG/GenAI | Llama Stack for RAG and GenAI applications; AI Playground auto-creates its distribution (`lsd-genai-playground`); manually-created distributions (for RAG/SDK use) require PostgreSQL | Service Mesh 3.x + cert-manager + GPU + NFD |
 | `feastoperator` | Optional — Feature Store | Feast Feature Store for ML feature management | None |
 | `kubeflowsparkoperator` | Optional — Spark data processing | Kubeflow Spark Operator (Apache Spark 4.x) | None (needs a custom Spark image) |
 | `mlflowoperator` | Optional — Experiment tracking | MLflow with Kubernetes RBAC | PVC (dev) or external DB + S3 (prod) |
@@ -954,37 +956,100 @@ Requires either MySQL 5.x+ (8.x recommended) or the built-in default database (n
 <details>
 <summary><strong>Distributed Inference with llm-d: Configure Gateway (Optional)</strong></summary>
 
-> **Requires:** kserve enabled, Leader Worker Set Operator, Connectivity Link Operator, OCP 4.20+.
+> **Requires:** kserve enabled, Leader Worker Set Operator, Connectivity Link Operator (RHCL), OCP 4.20+.
 > **Note:** OpenShift Service Mesh v2 must NOT be installed — only v3 or none.
 
+**Complete all four steps in order.** Steps 1–2 activate Kuadrant (which provisions the Envoy Gateway controller). Steps 3–4 create the gateway resources. Applying the GatewayClass before Kuadrant is Ready causes the controller to miss the event and remain `Unknown` indefinitely.
+
+**Step 1 — Create the `kuadrant-system` namespace and Kuadrant CR**
+
 ```bash
-# Create GatewayClass (once per cluster)
+# Namespace must exist before the CR
+oc create namespace kuadrant-system --dry-run=client -o yaml | oc apply -f -
+
+oc apply -f 05-configuration/llm-d/kuadrant-cr.yaml
+
+# Wait for Kuadrant to be Ready (1-3 minutes)
+oc wait Kuadrant kuadrant -n kuadrant-system --for=condition=Ready --timeout=10m
+
+# Verify
+oc get kuadrant kuadrant -n kuadrant-system \
+  -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+# Expected: True
+```
+
+**Step 2 — Configure Authorino TLS**
+
+Required for auth policy enforcement on the llm-d gateway.
+
+```bash
+# Annotate the Authorino service to trigger OpenShift service-ca cert generation.
+# Note: the service is named 'authorino-authorino-authorization' by Kuadrant.
+oc annotate svc/authorino-authorino-authorization \
+  -n kuadrant-system \
+  service.beta.openshift.io/serving-cert-secret-name=authorino-server-cert
+
+# Wait briefly for the secret to be created
+sleep 5
+
+# Enable TLS on the Authorino listener (apply full spec per docs — patch may miss fields)
 cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
+apiVersion: operator.authorino.kuadrant.io/v1beta1
+kind: Authorino
 metadata:
-  name: openshift-ai-inference
+  name: authorino
+  namespace: kuadrant-system
 spec:
-  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  replicas: 1
+  clusterWide: true
+  listener:
+    tls:
+      enabled: true
+      certSecretRef:
+        name: authorino-server-cert
+  oidcServer:
+    tls:
+      enabled: false
 EOF
 
-# Create the shared Gateway in openshift-ingress namespace
-cat <<EOF | oc apply -f -
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: openshift-ai-inference
-  namespace: openshift-ingress
-spec:
-  gatewayClassName: openshift-ai-inference
-  listeners:
-  - name: https
-    port: 443
-    protocol: HTTPS
-    allowedRoutes:
-      namespaces:
-        from: All
-EOF
+# Wait for Authorino pods to be ready
+oc wait --for=condition=ready pod -l authorino-resource=authorino \
+  -n kuadrant-system --timeout=150s
+
+# Verify
+oc get secret authorino-server-cert -n kuadrant-system
+oc get authorino authorino -n kuadrant-system \
+  -o jsonpath='{.spec.listener.tls.enabled}'
+# Expected: true
+```
+
+> **If RHOAI was installed before installing Connectivity Link:** restart the model serving controllers so they pick up the new auth infrastructure:
+>
+> ```bash
+> oc delete pod -n redhat-ods-applications -l app=odh-model-controller
+> oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager
+> ```
+
+**Step 3 — Create the GatewayClass (once per cluster)**
+
+```bash
+oc apply -f 05-configuration/llm-d/gateway-class.yaml
+
+# Verify — should be Accepted: True (not Unknown)
+oc get gatewayclass openshift-ai-inference
+```
+
+**Step 4 — Create the shared Gateway in `openshift-ingress`**
+
+> **Prerequisite:** The RHOAI operator must have provisioned the `data-science-gateway-service-tls`
+> Secret in `openshift-ingress` before this Gateway is applied. Verify:
+> `oc get secret data-science-gateway-service-tls -n openshift-ingress`
+
+```bash
+oc apply -f 05-configuration/llm-d/gateway.yaml
+
+# Verify — should be Programmed: True
+oc get gateway openshift-ai-inference -n openshift-ingress
 ```
 
 [Enabling Distributed Inference with llm-d](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploy_models_using_distributed_inference_with_llm-d/deploying-models-using-distributed-inference_distributed-inference#enabling-distributed-inference_distributed-inference) · [Configuring authentication for llm-d](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploy_models_using_distributed_inference_with_llm-d/configuring-authentication-for-llmd_distributed-inference)
@@ -992,15 +1057,186 @@ EOF
 </details>
 
 <details>
-<summary><strong>MLflow: Create an MLflow Instance (Optional)</strong></summary>
+<summary><strong>Llama Stack: AI Playground and RAG Workflows (Optional)</strong></summary>
+
+The Llama Stack Operator manages `LlamaStackDistribution` CRs. There are **two distinct use cases** with different setup requirements:
+
+---
+
+#### Use Case A — AI Playground (auto-managed, no manual CR needed)
+
+The gen-ai-studio AI Playground **auto-creates** a `LlamaStackDistribution` named **`lsd-genai-playground`** in the user's project when a playground instance is created. Admins do not create this CR manually — it is managed by the platform.
+
+**Prerequisite flow (official docs):**
+
+1. `genAiStudio: true` is set in `OdhDashboardConfig` ← cluster admin
+2. `llamastackoperator: Managed` in `DataScienceCluster` ← cluster admin
+3. Model is deployed as an **AI asset endpoint** — the InferenceService must have the label `opendatahub.io/genai-asset: "true"` ← set at deploy time (check "Add as AI asset endpoint" in the dashboard, or add the label to the InferenceService manifest)
+4. User navigates to **Gen AI studio → AI asset endpoints**, finds their model, and clicks **Add to playground**
+5. The platform creates `lsd-genai-playground` and the playground interface loads
+
+> **Tech Preview known behavior:** Background gen-ai-ui logs will show `no LlamaStackDistribution found` errors while browsing playground pages before a playground instance is created. These are expected polling failures, not crashes.
+
+> **Tech Preview known bug (RHOAI 3.4):** The "Gen AI studio → Playground → Create playground" path crashes with `Cannot read properties of null (reading 'find')` when no `lsd-genai-playground` exists yet. **Workaround:** Always create a playground via **"AI asset endpoints → Add to playground"** instead. This is also the path documented as the primary flow in the official prerequisites guide.
+>
+> **If the auto-created `lsd-genai-playground` is still not discovered by the gen-ai-ui:** Verify the LSD has the label `opendatahub.io/dashboard: "true"`. The gen-ai-ui informer uses this label as a selector — LSDs missing this label are invisible to the dashboard even if they are `Ready`. Check with `oc get lsd -n <project> --show-labels`. If missing, add it: `oc label lsd lsd-genai-playground -n <project> opendatahub.io/dashboard=true`
+
+> **Model type requirement:** Only `generative` (chat/completions) models work in the playground. Embedding models (`opendatahub.io/model-type: embedding`) will not function as conversational endpoints. Ensure the model is also not stopped (`serving.kserve.io/stop: "true"` annotation must not be present).
+>
+> **Undocumented requirements (RHOAI 3.4 Tech Preview gap):** Even with the LSD running and labeled correctly, the Playground will crash with `"Error loading components / Cannot read properties of null (reading 'find')"` if:
+> 1. `ENABLE_SENTENCE_TRANSFORMERS` is not set to `"true"` — the gen-ai-ui auto-creates a default vector store on load using model ID `sentence-transformers/ibm-granite/granite-embedding-125m-english`. The `rh-dev` distribution ships this model in its image cache but the provider is disabled by default.
+> 2. `ENABLE_FAISS` (or another vector store backend) is not set to `"true"` — all vector_io backends are gated behind env vars and none are enabled by default.
+> Neither of these requirements is documented in the official RHOAI 3.4 release notes or the Working with Llama Stack guide.
+
+> **If `lsd-genai-playground` fails to start:** Check the pod logs — `oc logs -n <project> -l app.kubernetes.io/part-of=lsd-genai-playground`. If the pod errors on a missing PostgreSQL connection, see Use Case B below; the auto-created distribution may inherit the same PostgreSQL requirement as manually-created distributions.
+
+**Reference:** [Playground prerequisites](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/experimenting_with_models_in_the_gen_ai_playground/playground-prerequisites_rhoai-user) · [Experimenting with models in the gen AI playground](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html-single/experimenting_with_models_in_the_gen_ai_playground/index)
+
+---
+
+#### Use Case B — RAG / Agentic Applications (manual CR required)
+
+For programmatic Llama Stack API access (RAG pipelines, agentic workflows built with the Llama Stack SDK), you create a `LlamaStackDistribution` CR manually. This is **separate from the playground** and is needed when data scientists build apps against the Llama Stack API directly.
+
+> **PostgreSQL is required** for all vector store and metadata backends (inline FAISS, inline Milvus Lite, and pgvector all use PostgreSQL for metadata persistence). SQLite-based storage is no longer recommended in RHOAI 3.4. Provision PostgreSQL before creating the distribution.
+
+**Step 1 — Enable the llamastackoperator in the DataScienceCluster**
 
 ```bash
-# Enable in DataScienceCluster
+oc patch datasciencecluster default-dsc \
+  --type=merge \
+  -p '{"spec":{"components":{"llamastackoperator":{"managementState":"Managed"}}}}'
+
+# Verify
+oc get pods -n redhat-ods-applications -l app=llama-stack-k8s-operator
+```
+
+**Step 2 — Create a PostgreSQL Secret in your data science project**
+
+```bash
+# Write password to a temp file (avoids shell history exposure)
+echo -n 'your-pg-password' > /tmp/pg-password.txt
+
+oc create secret generic llamastack-postgres-secret \
+  --from-file=password=/tmp/pg-password.txt \
+  -n <your-project>
+
+rm /tmp/pg-password.txt
+```
+
+**Step 3 — Create the LlamaStackDistribution CR**
+
+The `VLLM_URL` must be the **internal cluster service URL** of a running InferenceService — not the external route. For a KServe InferenceService named `my-model` in namespace `demo`, the internal URL is `https://my-model-predictor.demo.svc.cluster.local:8443/v1`.
+
+```bash
+oc apply -f 05-configuration/llama-stack/llamastackdistribution-example.yaml
+```
+
+Or apply inline after customizing all `<placeholder>` values:
+
+```bash
+cat <<EOF | oc apply -f -
+apiVersion: llamastack.io/v1alpha1
+kind: LlamaStackDistribution
+metadata:
+  name: llamastack
+  namespace: <your-project>
+  labels:
+    # Required — without this label the gen-ai-ui informer ignores the LSD
+    # and the AI Playground returns "Error loading components / no LSD found"
+    opendatahub.io/dashboard: "true"
+spec:
+  replicas: 1
+  server:
+    containerSpec:
+      name: llama-stack
+      port: 8321
+      env:
+        - name: VLLM_URL
+          value: "https://<isvc-name>-predictor.<namespace>.svc.cluster.local:8443/v1"
+        - name: INFERENCE_MODEL
+          value: "<model-name>"
+        - name: VLLM_TLS_VERIFY
+          value: "false"
+        # If the InferenceService has security.opendatahub.io/enable-auth: "true",
+        # the LSD needs a bearer token. Create a non-expiring SA token secret and
+        # reference it here (the SA must have 'get inferenceservices' RBAC):
+        # - name: VLLM_API_TOKEN
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: lsd-sa-token
+        #       key: token
+        - name: POSTGRES_HOST
+          value: "<postgres-host>"
+        - name: POSTGRES_PORT
+          value: "5432"
+        - name: POSTGRES_DB
+          value: "llamastack"
+        - name: POSTGRES_USER
+          value: "llamastack"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: llamastack-postgres-secret
+              key: password
+        # REQUIRED for AI Playground: enable the inline embedding model.
+        # The rh-dev image includes ibm-granite/granite-embedding-125m-english
+        # in its local cache. This registers it as the model ID the gen-ai-ui
+        # expects when auto-creating the default vector store.
+        - name: ENABLE_SENTENCE_TRANSFORMERS
+          value: "true"
+        # REQUIRED for AI Playground: enable at least one vector store backend.
+        # FAISS is the simplest for dev/test (index stored in-process, metadata
+        # persisted in PostgreSQL). For production RAG use ENABLE_PGVECTOR=true.
+        - name: ENABLE_FAISS
+          value: "true"
+    distribution:
+      name: rh-dev
+    storage:
+      size: 20Gi
+EOF
+```
+
+**Verify:**
+
+```bash
+# Watch the pod start up
+oc get pods -n <your-project> -l app.kubernetes.io/name=llamastackdistribution -w
+
+# Check distribution status
+oc get llamastackdistribution -n <your-project>
+
+# Verify the Llama Stack API is responding
+oc port-forward svc/llamastack -n <your-project> 8321:8321 &
+curl http://localhost:8321/v1/health
+```
+
+**Reference:** [Deploying a Llama Stack server](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_llama_stack/deploying-llama-stack-server_rag)
+
+</details>
+
+<details>
+<summary><strong>MLflow: Create an MLflow Instance (Optional)</strong></summary>
+
+The MLflow Operator deploys an MLflow tracking server for experiment logging (metrics, parameters, artifacts) from training workloads and notebooks. The **gen-ai-studio** auto-discovers the `MLflow` CR via a cluster-wide watch and surfaces it in the UI; without a CR it gracefully returns HTTP 503 for MLflow endpoints. No other RHOAI component is blocked by missing MLflow — impact is limited to users whose code calls `mlflow.log_*()`, which will fail to connect.
+
+**Step 1 — Enable the mlflowoperator in the DataScienceCluster**
+
+```bash
 oc patch datasciencecluster default-dsc \
   --type=merge \
   -p '{"spec":{"components":{"mlflowoperator":{"managementState":"Managed"}}}}'
+```
 
-# Create MLflow CR (development/test — uses SQLite + PVC)
+**Step 2 — Create an MLflow CR**
+
+```bash
+oc apply -f 05-configuration/mlflow/mlflow-cr.yaml
+```
+
+Or apply the dev/test variant inline (SQLite + PVC — not for production):
+
+```bash
 cat <<EOF | oc apply -f -
 apiVersion: mlflow.opendatahub.io/v1
 kind: MLflow
@@ -1008,17 +1244,27 @@ metadata:
   name: mlflow
   namespace: redhat-ods-applications
 spec:
+  backendStoreUri: "sqlite:////mlflow/mlflow.db"
+  serveArtifacts: true   # required when no external artifact store is configured
   storage:
     accessModes:
       - ReadWriteOnce
     resources:
       requests:
         storage: 10Gi
-  backendStoreUri: "sqlite:////mlflow/mlflow.db"
 EOF
 ```
 
-> For production: use an external PostgreSQL or MySQL database and S3-compatible artifact storage.
+> For production: use an external PostgreSQL or MySQL database (`backendStoreUri: "postgresql+psycopg2://..."`) and S3-compatible artifact storage (`defaultArtifactRoot: "s3://..."`). See `05-configuration/mlflow/mlflow-cr.yaml` for a commented production template.
+
+**Verify:**
+
+```bash
+oc get mlflow -n redhat-ods-applications
+oc get pods -n redhat-ods-applications -l app.kubernetes.io/name=mlflow
+```
+
+> **Documentation status:** The MLflow CR is documented in the official [Working with MLflow](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_mlflow) docs. The gap is that enabling `mlflowoperator: Managed` in the DSC alone is insufficient — you must also create the `MLflow` CR, and the connection to the gen-ai-studio 503 behavior is not documented.
 
 [MLflow docs](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_mlflow)
 
@@ -1080,6 +1326,16 @@ oc get configmaps --all-namespaces -l app.kubernetes.io/part-of=opendatahub-oper
 
 ---
 
+## Known Issues (RHOAI 3.4)
+
+### AI Playground / GenAI Studio — "Error loading components"
+
+**Status:** Tech Preview bug — fix in progress upstream (ODH PR #5707 / `RHOAIENG-36419`). No supported workaround exists in RHOAI 3.4.
+
+The AI Playground crashes for all users due to a frontend null-guard bug in the `gen-ai-ui` component. The LSD backend works correctly; the issue is in how the frontend handles namespaces that lack an LSD. Open a Red Hat support case referencing `RHOAIENG-36419` (ODH Dashboard PR #5707).
+
+---
+
 ## Key Reference Links
 
 | Resource | URL |
@@ -1095,4 +1351,4 @@ oc get configmaps --all-namespaces -l app.kubernetes.io/part-of=opendatahub-oper
 | Distributed Inference with llm-d | https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploy_models_using_distributed_inference_with_llm-d/deploying-models-using-distributed-inference_distributed-inference#enabling-distributed-inference_distributed-inference |
 | MLflow docs | https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_mlflow |
 | Kubeflow Spark Operator docs | https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/creating_distributed_data_processing_applications_with_kso |
-| Working with Llama Stack | https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_llama_stack |
+| Working with Llama Stack | https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_llama_stack/deploying-llama-stack-server_rag |

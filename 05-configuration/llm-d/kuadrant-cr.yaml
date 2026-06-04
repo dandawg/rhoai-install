@@ -1,0 +1,29 @@
+---
+# Kuadrant CR — activates the Kuadrant control plane in kuadrant-system.
+#
+# Required for llm-d distributed inference AUTH POLICY ENFORCEMENT only.
+# The Red Hat Connectivity Link (RHCL) operator must be installed first.
+# This CR provisions Authorino (JWT auth) and Limitador (rate limiting).
+#
+# NOTE: Kuadrant does NOT control the openshift-ai-inference GatewayClass.
+# The gateway itself is managed by the OCP Ingress Operator (Istio-based),
+# activated by the GatewayClass using controller: openshift.io/gateway-controller/v1.
+# Kuadrant is an optional layer on top for token-based auth enforcement.
+#
+# IMPORTANT: Create the kuadrant-system namespace first:
+#   oc create namespace kuadrant-system --dry-run=client -o yaml | oc apply -f -
+#
+# Apply the GatewayClass and Gateway BEFORE or AFTER this CR — the gateway
+# controller (OCP Ingress Operator) is independent of Kuadrant.
+# However, apply this CR before creating AuthPolicy resources.
+#
+# After Kuadrant is Ready, if RHOAI was installed before RHCL, restart:
+#   oc delete pod -n redhat-ods-applications -l app=odh-model-controller
+#   oc delete pod -n redhat-ods-applications -l control-plane=kserve-controller-manager
+#
+# Ref: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploy_models_using_distributed_inference_with_llm-d/configuring-authentication-for-llmd_distributed-inference
+apiVersion: kuadrant.io/v1beta1
+kind: Kuadrant
+metadata:
+  name: kuadrant
+  namespace: kuadrant-system

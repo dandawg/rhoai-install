@@ -1,14 +1,26 @@
 # GatewayClass for llm-d Distributed Inference
 #
 # Apply once per cluster.
-# Prerequisites: Red Hat Connectivity Link (RHCL) operator installed,
-#                kserve: Managed in the DataScienceCluster,
-#                OCP 4.20+ for llm-d support.
+# Prerequisites: kserve: Managed in the DataScienceCluster,
+#                OCP 4.19.9+ (4.20+ for full llm-d support),
+#                Leader Worker Set (LWS) Operator installed.
 #
 # Note: OpenShift Service Mesh v2 must NOT be installed — only v3 or none.
+#
+# Controller: openshift.io/gateway-controller/v1 is the OCP Ingress Operator's
+# built-in Istio-based Gateway API controller. Creating this GatewayClass causes
+# the Ingress Operator to provision the required Istio infrastructure automatically.
+# This is the correct controller for RHOAI Self-Managed distributed inference.
+#
+# Do NOT use gateway.envoyproxy.io/gatewayclass-controller — that controller is
+# for the standalone 'Red Hat AI Inference' product and requires Kuadrant/RHCL.
+#
+# Authentication (optional): Install Red Hat Connectivity Link (RHCL) and apply
+# kuadrant-cr.yaml AFTER this GatewayClass is Accepted to enable token-based
+# auth policy enforcement via Authorino on top of the gateway.
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
   name: openshift-ai-inference
 spec:
-  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+  controllerName: openshift.io/gateway-controller/v1

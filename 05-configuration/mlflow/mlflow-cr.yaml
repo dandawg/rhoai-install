@@ -1,0 +1,66 @@
+---
+# MLflow CR — deploys an MLflow tracking server managed by the MLflow Operator.
+#
+# Prerequisites:
+#   - mlflowoperator: Managed in the DataScienceCluster
+#
+# Two variants are shown below. Use one, not both.
+#
+# VARIANT A: Development / Test — SQLite + PVC (no external DB required)
+# Suitable for local experimentation. Not for production (single-writer SQLite).
+#
+# VARIANT B: Production — PostgreSQL + S3 artifact storage
+# Requires an accessible PostgreSQL instance and S3-compatible bucket.
+# See the production template at the bottom of this file.
+#
+# Ref: https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_mlflow
+#
+# NOTE: The gen-ai-studio (AI Playground) auto-discovers this CR via cluster-scoped
+# watch. If no MLflow CR exists, the playground returns HTTP 503 for MLflow-related
+# endpoints but continues to function for all other features.
+# Deploying this CR in redhat-ods-applications creates a shared MLflow instance
+# visible to all data science projects.
+
+# ── VARIANT A: Dev/Test ──────────────────────────────────────────────────────
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+  namespace: redhat-ods-applications
+spec:
+  # SQLite stored on a PVC — simple but not production-safe
+  backendStoreUri: "sqlite:////mlflow/mlflow.db"
+  # serveArtifacts: true stores artifacts alongside the tracking DB on the PVC.
+  # Required when no external artifact store (S3) is configured.
+  serveArtifacts: true
+  storage:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 10Gi
+
+# ── VARIANT B: Production ────────────────────────────────────────────────────
+# Uncomment and fill in values. Delete the Variant A block above.
+#
+# apiVersion: mlflow.opendatahub.io/v1
+# kind: MLflow
+# metadata:
+#   name: mlflow
+#   namespace: redhat-ods-applications
+# spec:
+#   backendStoreUri: "postgresql+psycopg2://<user>:<password>@<host>:<port>/<db>"
+#   defaultArtifactRoot: "s3://<bucket>/mlflow-artifacts"
+#   env:
+#     - name: AWS_ACCESS_KEY_ID
+#       valueFrom:
+#         secretKeyRef:
+#           name: mlflow-s3-secret
+#           key: access_key_id
+#     - name: AWS_SECRET_ACCESS_KEY
+#       valueFrom:
+#         secretKeyRef:
+#           name: mlflow-s3-secret
+#           key: secret_access_key
+#     - name: MLFLOW_S3_ENDPOINT_URL     # only for non-AWS S3 (e.g. MinIO, Noobaa)
+#       value: "https://<s3-endpoint>"

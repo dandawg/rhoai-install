@@ -61,19 +61,68 @@ See [Distributed workloads docs](https://docs.redhat.com/en/documentation/red_ha
 
 ## Distributed Inference (llm-d): Configure Gateway
 
-After installing LWS and RHCL operators, and with kserve enabled in the DSC:
+After installing LWS operator, and with kserve enabled in the DSC:
 
 ```bash
-# Create GatewayClass (once per cluster)
+# Step 1: Create the Kuadrant namespace and CR (RHCL operator required — for auth only)
+oc create namespace kuadrant-system --dry-run=client -o yaml | oc apply -f -
+oc apply -f 05-configuration/llm-d/kuadrant-cr.yaml
+oc wait Kuadrant kuadrant -n kuadrant-system --for=condition=Ready --timeout=10m
+
+# Step 2: Create GatewayClass (once per cluster — uses OCP Ingress Operator, NOT Kuadrant)
 oc apply -f 05-configuration/llm-d/gateway-class.yaml
 
-# Create the shared Gateway
+# Step 3: Create the shared Gateway
 oc apply -f 05-configuration/llm-d/gateway.yaml
 ```
 
-Requirements: OCP 4.20+, kserve Managed, LWS operator, RHCL operator. Service Mesh v2 must NOT be installed.
+Requirements: OCP 4.19.9+ (4.20+ for full llm-d), kserve Managed, LWS operator. RHCL operator required only for auth policy enforcement (Kuadrant). Service Mesh v2 must NOT be installed.
+
+> **GatewayClass controller:** Uses `openshift.io/gateway-controller/v1` (OCP Ingress Operator / Istio). Do NOT use `gateway.envoyproxy.io/gatewayclass-controller` — that is for the standalone Red Hat AI Inference product.
 
 See [llm-d Distributed Inference docs](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/deploy_models_using_distributed_inference_with_llm-d/deploying-models-using-distributed-inference_distributed-inference#enabling-distributed-inference_distributed-inference).
+
+---
+
+## Llama Stack
+
+After enabling `llamastackoperator: Managed` in the DSC, there are two distinct use cases:
+
+### A — AI Playground (auto-managed, no manual CR)
+
+The gen-ai-studio AI Playground **auto-creates** a `LlamaStackDistribution` named `lsd-genai-playground` when a user creates a playground instance. Admins do not create this manually.
+
+User flow: Gen AI studio → AI asset endpoints → **Add to playground** → `lsd-genai-playground` is created automatically.
+
+**Prerequisite:** The InferenceService must have label `opendatahub.io/genai-asset: "true"` (set via "Add as AI asset endpoint" checkbox in the dashboard).
+
+See [Playground prerequisites](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/experimenting_with_models_in_the_gen_ai_playground/playground-prerequisites_rhoai-user).
+
+### B — RAG / Agentic Apps (manual CR required)
+
+For programmatic Llama Stack API access (RAG pipelines, SDK-based agentic workflows), create a `LlamaStackDistribution` manually. **PostgreSQL is required** for all metadata backends.
+
+```bash
+# Customize all <placeholder> values first, then apply
+oc apply -f 05-configuration/llama-stack/llamastackdistribution-example.yaml
+```
+
+See [Deploying a Llama Stack server](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_llama_stack/deploying-llama-stack-server_rag).
+
+---
+
+## MLflow: Create an MLflow Tracking Server
+
+After enabling `mlflowoperator: Managed` in the DSC:
+
+```bash
+# Dev/test (SQLite + PVC):
+oc apply -f 05-configuration/mlflow/mlflow-cr.yaml
+
+# Edit mlflow-cr.yaml first for production (PostgreSQL + S3)
+```
+
+See [Working with MLflow](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/working_with_mlflow).
 
 ---
 
